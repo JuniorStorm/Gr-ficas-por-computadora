@@ -1,155 +1,127 @@
+<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>TapTapBoom</title>
-  <script src="https://code.playcanvas.com/playcanvas-stable.min.js"></script>
-  <style>
-    body { margin: 0; overflow: hidden; }
-    canvas { width: 100%; height: 100%; display: block; }
-  </style>
-</head>
-<body>
-<canvas id="application"></canvas>
-<script>
-  const canvas = document.getElementById("application");
-  const app = new pc.Application(canvas, {});
-  app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
-  app.setCanvasResolution(pc.RESOLUTION_AUTO);
-
-  // Cámara ortográfica (2D)
-  const camera = new pc.Entity("Camera");
-  camera.addComponent("camera", {
-    projection: pc.PROJECTION_ORTHOGRAPHIC,
-    orthoHeight: 5,
-    clearColor: new pc.Color(0.7, 0.7, 1)
-  });
-  camera.setLocalPosition(0, 0, 10);
-  app.root.addChild(camera);
-
-  // Jugador (cubo rojo)
-  const player = new pc.Entity("Player");
-  player.addComponent("model", { type: "box" });
-  const playerMat = new pc.StandardMaterial();
-  playerMat.emissive = new pc.Color(1, 0, 0); // Rojo brillante
-  playerMat.emissiveIntensity = 1;
-  playerMat.update();
-  player.model.material = playerMat;
-  player.setLocalScale(0.5, 0.5, 0.5);
-  player.setLocalPosition(-3, 0, 0);
-  app.root.addChild(player);
-
-  // Obstáculos
-  const obstacles = [];
-  const greenMat = new pc.StandardMaterial();
-  greenMat.emissive = new pc.Color(0.1, 0.4, 0.1); // Verde
-  greenMat.emissiveIntensity = 1;
-  greenMat.update();
-
-  function createObstacle(xPos) {
-    const gap = 2; // espacio en el medio
-    const topHeight = Math.random() * 5 + 1;
-    const bottomHeight = 8 - topHeight - gap;
-
-    // Tubo superior
-    const top = new pc.Entity("TopPipe");
-    top.addComponent("model", { type: "box" });
-    top.model.material = greenMat;
-    top.setLocalScale(1, topHeight, 0.5);
-    top.setLocalPosition(xPos, 5 - topHeight/2, 0);
-    app.root.addChild(top);
-
-    // Tubo inferior
-    const bottom = new pc.Entity("BottomPipe");
-    bottom.addComponent("model", { type: "box" });
-    bottom.model.material = greenMat;
-    bottom.setLocalScale(1, bottomHeight, 0.5);
-    bottom.setLocalPosition(xPos, -5 + bottomHeight/2, 0);
-    app.root.addChild(bottom);
-
-    obstacles.push({ top, bottom });
+  <title>Árbol Fractal Animado en WebGL</title>
+ <style>
+  body {
+    margin: 0;
+    display: flex;              
+    justify-content: center;    
+    align-items: flex-start;       
+    height: 100vh;              
+    background: white;          
   }
 
-  // Variables de juego
-  let velocity = 0;
-  let gravity = -10;
-  let jumpForce = 5;
-  let gameOver = false;
-  let score = 0;
-  let obstacleTimer = 0;
-  let obstacleInterval = 2; // segundos entre obstáculos
-  let difficultyTimer = 0;
+  canvas {
+    width: 600px;              
+    height: 400px;              
+    display: block;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+const canvas = document.getElementById("canvas");
+const gl = canvas.getContext("webgl");
 
-  // Input
-  window.addEventListener("keydown", (e) => {
-    if (e.code === "Space" && !gameOver) {
-      velocity = jumpForce;
-    }
-  });
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
 
-  // Loop de actualización
-  app.on("update", function (dt) {
-    if (gameOver) return;
+// Shaders
+const vsSource = `
+  attribute vec2 a_position;
+  uniform vec2 u_resolution;
+  void main() {
+    vec2 zeroToOne = a_position / u_resolution;
+    vec2 zeroToTwo = zeroToOne * 2.0;
+    vec2 clipSpace = zeroToTwo - 1.0;
+    gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1);
+  }
+`;
 
-    // Movimiento jugador (gravedad + salto)
-    velocity += gravity * dt;
-    let pos = player.getLocalPosition();
-    pos.y += velocity * dt;
-    player.setLocalPosition(pos);
+const fsSource = `
+  void main() {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); // negro
+  }
+`;
 
-    // Generar obstáculos
-    obstacleTimer += dt;
-    difficultyTimer += dt;
-    if (obstacleTimer > obstacleInterval) {
-      createObstacle(8);
-      obstacleTimer = 0;
-    }
+function createShader(gl, type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  return shader;
+}
+function createProgram(gl, vsSource, fsSource) {
+  const vertexShader = createShader(gl, gl.VERTEX_SHADER, vsSource);
+  const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+  const program = gl.createProgram();
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+  return program;
+}
 
-    // Aumentar dificultad cada 10 segundos
-    if (difficultyTimer > 5 && obstacleInterval > 0.5) {
-      obstacleInterval -= 0.2; // reduce el intervalo
-      difficultyTimer = 0;
-      console.log("Dificultad aumentada. Nuevo intervalo:", obstacleInterval.toFixed(2));
-    }
+const program = createProgram(gl, vsSource, fsSource);
+gl.useProgram(program);
 
-    // Mover obstáculos
-    for (let i = obstacles.length - 1; i >= 0; i--) {
-      let obs = obstacles[i];
-      obs.top.translateLocal(-3 * dt, 0, 0);
-      obs.bottom.translateLocal(-3 * dt, 0, 0);
+const positionLocation = gl.getAttribLocation(program, "a_position");
+const resolutionLocation = gl.getUniformLocation(program, "u_resolution");
 
-      // Colisión simple
-      if (
-        Math.abs(obs.top.getLocalPosition().x - pos.x) < 0.5 &&
-        (pos.y > obs.top.getLocalPosition().y - obs.top.getLocalScale().y / 2 ||
-         pos.y < obs.bottom.getLocalPosition().y + obs.bottom.getLocalScale().y / 2)
-      ) {
-        alert("💀 Game Over! Puntuación: " + score);
-        gameOver = true;
-      }
+// Buffer de posiciones
+const positionBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+gl.enableVertexAttribArray(positionLocation);
+gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
 
-      // Aumentar puntaje
-      if (obs.top.getLocalPosition().x < pos.x && !obs.scored) {
-        score++;
-        console.log("Puntaje:", score);
-        obs.scored = true;
-      }
+let lines = [];
+let branches = []; // ramas pendientes para animación
 
-      // Eliminar obstáculos viejos
-      if (obs.top.getLocalPosition().x < -10) {
-        app.root.removeChild(obs.top);
-        app.root.removeChild(obs.bottom);
-        obstacles.splice(i, 1);
-      }
-    }
+// Genera recursivamente pero guarda ramas en cola
+function generateBranches(x, y, length, angle, depth) {
+  if (depth === 0) return;
+  const x2 = x + length * Math.cos(angle);
+  const y2 = y + length * Math.sin(angle);
 
-    // Límite del mundo
-    if (pos.y < -5 || pos.y > 5) {
-      alert("💀 Game Over! Puntuación: " + score);
-      gameOver = true;
-    }
-  });
+  // Guardamos esta rama en la lista
+  branches.push([x, y, x2, y2, length, angle, depth]);
 
-  app.start();
+  // Generamos hijos (se añadirán después en animación)
+  setTimeout(() => {
+    generateBranches(x2, y2, length * 0.7, angle - Math.PI / 6, depth - 1);
+    generateBranches(x2, y2, length * 0.7, angle + Math.PI / 6, depth - 1);
+  }, 500); // retraso de 200ms por nivel
+}
+
+// Dibuja todas las líneas acumuladas
+function render() {
+  gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
+  gl.clearColor(1, 1, 1, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(lines), gl.STATIC_DRAW);
+  gl.drawArrays(gl.LINES, 0, lines.length / 2);
+}
+
+// Función de animación: va tomando ramas de la cola
+function animate() {
+  if (branches.length > 0) {
+    const [x, y, x2, y2, length, angle, depth] = branches.shift();
+    lines.push(x, y, x2, y2);
+    render();
+  }
+  requestAnimationFrame(animate);
+}
+
+// Inicia árbol
+const startX = canvas.width / 2; 
+const startY = canvas.height *0.9;
+
+generateBranches(startX, startY, 200, -Math.PI / 2, 8);
+
+animate();
+
 </script>
 </body>
 </html>

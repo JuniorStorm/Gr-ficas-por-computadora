@@ -1,0 +1,155 @@
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>TapTapBoom</title>
+  <script src="https://code.playcanvas.com/playcanvas-stable.min.js"></script>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    canvas { width: 100%; height: 100%; display: block; }
+  </style>
+</head>
+<body>
+<canvas id="application"></canvas>
+<script>
+  const canvas = document.getElementById("application");
+  const app = new pc.Application(canvas, {});
+  app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+  app.setCanvasResolution(pc.RESOLUTION_AUTO);
+
+  // Cámara ortográfica (2D)
+  const camera = new pc.Entity("Camera");
+  camera.addComponent("camera", {
+    projection: pc.PROJECTION_ORTHOGRAPHIC,
+    orthoHeight: 5,
+    clearColor: new pc.Color(0.7, 0.7, 1)
+  });
+  camera.setLocalPosition(0, 0, 10);
+  app.root.addChild(camera);
+
+  // Jugador (cubo rojo)
+  const player = new pc.Entity("Player");
+  player.addComponent("model", { type: "box" });
+  const playerMat = new pc.StandardMaterial();
+  playerMat.emissive = new pc.Color(1, 0, 0); // Rojo brillante
+  playerMat.emissiveIntensity = 1;
+  playerMat.update();
+  player.model.material = playerMat;
+  player.setLocalScale(0.5, 0.5, 0.5);
+  player.setLocalPosition(-3, 0, 0);
+  app.root.addChild(player);
+
+  // Obstáculos
+  const obstacles = [];
+  const greenMat = new pc.StandardMaterial();
+  greenMat.emissive = new pc.Color(0.1, 0.4, 0.1); // Verde
+  greenMat.emissiveIntensity = 1;
+  greenMat.update();
+
+  function createObstacle(xPos) {
+    const gap = 2; // espacio en el medio
+    const topHeight = Math.random() * 5 + 1;
+    const bottomHeight = 8 - topHeight - gap;
+
+    // Tubo superior
+    const top = new pc.Entity("TopPipe");
+    top.addComponent("model", { type: "box" });
+    top.model.material = greenMat;
+    top.setLocalScale(1, topHeight, 0.5);
+    top.setLocalPosition(xPos, 5 - topHeight/2, 0);
+    app.root.addChild(top);
+
+    // Tubo inferior
+    const bottom = new pc.Entity("BottomPipe");
+    bottom.addComponent("model", { type: "box" });
+    bottom.model.material = greenMat;
+    bottom.setLocalScale(1, bottomHeight, 0.5);
+    bottom.setLocalPosition(xPos, -5 + bottomHeight/2, 0);
+    app.root.addChild(bottom);
+
+    obstacles.push({ top, bottom });
+  }
+
+  // Variables de juego
+  let velocity = 0;
+  let gravity = -10;
+  let jumpForce = 5;
+  let gameOver = false;
+  let score = 0;
+  let obstacleTimer = 0;
+  let obstacleInterval = 2; // segundos entre obstáculos
+  let difficultyTimer = 0;
+
+  // Input
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space" && !gameOver) {
+      velocity = jumpForce;
+    }
+  });
+
+  // Loop de actualización
+  app.on("update", function (dt) {
+    if (gameOver) return;
+
+    // Movimiento jugador (gravedad + salto)
+    velocity += gravity * dt;
+    let pos = player.getLocalPosition();
+    pos.y += velocity * dt;
+    player.setLocalPosition(pos);
+
+    // Generar obstáculos
+    obstacleTimer += dt;
+    difficultyTimer += dt;
+    if (obstacleTimer > obstacleInterval) {
+      createObstacle(8);
+      obstacleTimer = 0;
+    }
+
+    // Aumentar dificultad cada 10 segundos
+    if (difficultyTimer > 5 && obstacleInterval > 0.5) {
+      obstacleInterval -= 0.2; // reduce el intervalo
+      difficultyTimer = 0;
+      console.log("Dificultad aumentada. Nuevo intervalo:", obstacleInterval.toFixed(2));
+    }
+
+    // Mover obstáculos
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      let obs = obstacles[i];
+      obs.top.translateLocal(-3 * dt, 0, 0);
+      obs.bottom.translateLocal(-3 * dt, 0, 0);
+
+      // Colisión simple
+      if (
+        Math.abs(obs.top.getLocalPosition().x - pos.x) < 0.5 &&
+        (pos.y > obs.top.getLocalPosition().y - obs.top.getLocalScale().y / 2 ||
+         pos.y < obs.bottom.getLocalPosition().y + obs.bottom.getLocalScale().y / 2)
+      ) {
+        alert("💀 Game Over! Puntuación: " + score);
+        gameOver = true;
+      }
+
+      // Aumentar puntaje
+      if (obs.top.getLocalPosition().x < pos.x && !obs.scored) {
+        score++;
+        console.log("Puntaje:", score);
+        obs.scored = true;
+      }
+
+      // Eliminar obstáculos viejos
+      if (obs.top.getLocalPosition().x < -10) {
+        app.root.removeChild(obs.top);
+        app.root.removeChild(obs.bottom);
+        obstacles.splice(i, 1);
+      }
+    }
+
+    // Límite del mundo
+    if (pos.y < -5 || pos.y > 5) {
+      alert("💀 Game Over! Puntuación: " + score);
+      gameOver = true;
+    }
+  });
+
+  app.start();
+</script>
+</body>
+</html>
