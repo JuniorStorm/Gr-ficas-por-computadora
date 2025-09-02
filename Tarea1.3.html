@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Objeto en movimiento con rebote (WebGL)</title>
+  <style>
+    body { 
+      margin: 0; 
+      background: white; /* Fondo de la página */
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh; /* Para centrar el canvas verticalmente */
+    }
+    canvas {
+      background: black; /* Fondo del canvas */
+      width: 600px;  /* tamaño visible */
+      height: 400px; /* tamaño visible */
+    }
+  </style>
+</head>
+<body>
+<canvas id="glcanvas" width="600" height="400"></canvas>
+<script>
+// Tu código WebGL aquí
+const canvas = document.getElementById("glcanvas");
+const gl = canvas.getContext("webgl"); 
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+// === Shaders ===
+const vsSource = `
+  attribute vec2 aPosition;
+  uniform vec2 uTranslation;
+  uniform float uAngle;
+  void main(void) {
+    float cosA = cos(uAngle);
+    float sinA = sin(uAngle);
+    mat2 rotation = mat2(cosA, -sinA, sinA, cosA);
+    vec2 rotated = rotation * aPosition;
+    gl_Position = vec4(rotated + uTranslation, 0.0, 1.0);
+  }
+`;
+
+const fsSource = `
+  void main(void) {
+    gl_FragColor = vec4(0.2, 0.7, 1.0, 1.0);
+  }
+`;
+
+function compileShader(type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    console.error("Error compilando shader:", gl.getShaderInfoLog(shader));
+  }
+  return shader;
+}
+
+const vertexShader = compileShader(gl.VERTEX_SHADER, vsSource);
+const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fsSource);
+
+// === Programa ===
+const program = gl.createProgram();
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+gl.linkProgram(program);
+gl.useProgram(program);
+
+// === Geometría: un cuadrado centrado en el origen ===
+const vertices = new Float32Array([
+  -0.1, -0.1,
+   0.1, -0.1,
+   0.1,  0.1,
+  -0.1,  0.1,
+]);
+
+const indices = new Uint16Array([
+  0, 1, 2,
+  2, 3, 0
+]);
+
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+const ebo = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+const aPosition = gl.getAttribLocation(program, "aPosition");
+gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
+gl.enableVertexAttribArray(aPosition);
+
+const uTranslation = gl.getUniformLocation(program, "uTranslation");
+const uAngle = gl.getUniformLocation(program, "uAngle");
+
+// === Variables de movimiento ===
+let pos = [0.0, 0.0];
+let vel = [0.01, 0.007];
+let angle = 0.0;
+
+function render() {
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0.0, 0.0, 0.0, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  // Ajuste por relación de aspecto
+  const aspect = canvas.width / canvas.height;
+
+  // Movimiento
+  pos[0] += vel[0];
+  pos[1] += vel[1];
+
+  // Rebote: en X se ajusta por aspect ratio
+  const limiteX = 1 + 0.3;
+  const limiteY = 1 - 0.1;
+
+  if (pos[0] > limiteX/aspect || pos[0] < -limiteX/aspect) vel[0] *= -1;
+  if (pos[1] > limiteY || pos[1] < -limiteY) vel[1] *= -1;
+
+  // Rotación
+  angle += 0.05;
+
+  // Enviar uniforms
+  gl.uniform2fv(uTranslation, pos);
+  gl.uniform1f(uAngle, angle);
+
+  // Dibujar
+  gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+
+  requestAnimationFrame(render);
+}
+
+render();
+</script>
+</body>
+</html>
