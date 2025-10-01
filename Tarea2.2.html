@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>Tarea 2.1 Santiago Itzincab</title>
+<style>
+  html,body { height:100%; margin:0; background-color: blueviolet;}
+  canvas { display:block; width:100%; height:80%; background: black; }
+  .controls { margin:10px; font-family:sans-serif; display: grid; place-items: center;}
+  button { margin:2px; padding:6px 12px; background-color: aqua;}
+</style>
+</head>
+<body>
+<canvas id="glcanvas"></canvas>
+
+<div class="controls">
+  <div>
+    <b>Dirección:</b>
+    <button onclick="theta -= 0.1">⟵ Izquierda</button>
+    <button onclick="theta += 0.1">Derecha ⟶</button>
+  </div>
+  <div>
+    <b>Altura:</b>
+    <button onclick="phi -= 0.1">⬆ Arriba</button>
+    <button onclick="phi += 0.1">⬇ Abajo</button>
+  </div>
+  <div>
+    <b>Zoom:</b>
+    <button onclick="radius -= 1">Acercar 🔍</button>
+    <button onclick="radius += 1">Alejar 🔎</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl');
+if (!gl) alert("WebGL no está disponible en este navegador.");
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+gl.viewport(0,0,canvas.width,canvas.height);
+
+// --- Shaders ---
+// Vertex
+const vsSource = `
+  attribute vec3 aPosition;
+  attribute vec2 aTexCoord;
+  uniform mat4 uModelViewMatrix;
+  uniform mat4 uProjectionMatrix;
+  varying vec2 vTexCoord;
+  void main(void){
+    gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aPosition, 1.0);
+    vTexCoord = aTexCoord;
+  }
+`;
+// Fragment
+const fsSource = `
+  precision mediump float;
+  varying vec2 vTexCoord;
+  uniform sampler2D uCaucho;
+  uniform sampler2D uRin;
+  uniform bool uIsSide;
+
+  void main(void){
+    if(uIsSide){
+      // LATERAL: gris uniforme
+      gl_FragColor = vec4(0.3,0.3,0.3,1.0);
+    } else {
+      // TAPAS: mezcla caucho (anillo) + rin (centro)
+      vec2 centered = vTexCoord*2.0 - 1.0;
+      float r = length(centered);
+      float radioRin = 0.6; // tamaño del rin
+      if(r < radioRin){
+        gl_FragColor = texture2D(uRin, vTexCoord);
+      } else {
+        gl_FragColor = texture2D(uCaucho, vTexCoord);
+      }
+    }
+  }
+`;
+
+// --- Compilar programa ---
+function compile(type,src){
+  const s=gl.createShader(type);
+  gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog,compile(gl.VERTEX_SHADER,vsSource));
+gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,fsSource));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS))
+  throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const attribPos = gl.getAttribLocation(prog,"aPosition");
+const attribTex = gl.getAttribLocation(prog,"aTexCoord");
+const uniMV = gl.getUniformLocation(prog,"uModelViewMatrix");
+const uniP = gl.getUniformLocation(prog,"uProjectionMatrix");
+const uniCaucho = gl.getUniformLocation(prog,"uCaucho");
+const uniRin = gl.getUniformLocation(prog,"uRin");
+const uniIsSide = gl.getUniformLocation(prog,"uIsSide");
+
+// --- Crear cilindro ---
+function createCylinderX(radius,length,segments){
+  const pos=[], tex=[], idxSides=[], idxCaps=[];
+
+  // Laterales
+  for(let i=0;i<=segments;i++){
+    const t=i/segments*2*Math.PI;
+    const y=radius*Math.cos(t), z=radius*Math.sin(t);
+    pos.push(-length/2,y,z); tex.push(i/segments,0);
+    pos.push( length/2,y,z); tex.push(i/segments,1);
+  }
+  for(let i=0;i<segments*2;i+=2){
+    idxSides.push(i,i+1,i+2, i+1,i+3,i+2);
+  }
+
+  // Tapas
+  function addCap(x){
+    const center = pos.length/3;
+    pos.push(x,0,0); tex.push(0.5,0.5);
+    for(let i=0;i<=segments;i++){
+      const t=i/segments*2*Math.PI;
+      const y=radius*Math.cos(t), z=radius*Math.sin(t);
+      pos.push(x,y,z);
+      tex.push((y/radius)*0.5+0.5,(z/radius)*0.5+0.5);
+      if(i<segments){
+        if(x<0) idxCaps.push(center, center+1+i, center+2+i);
+        else idxCaps.push(center, center+2+i, center+1+i);
+      }
+    }
+  }
+  addCap(-length/2);
+  addCap( length/2);
+
+  return {
+    positions:new Float32Array(pos),
+    texcoords:new Float32Array(tex),
+    indicesSides:new Uint16Array(idxSides),
+    indicesCaps:new Uint16Array(idxCaps),
+    radius,length
+  };
+}
+//const cyl = createCylinderX(0.8,2.5,48);
+const cyl = createCylinderX(0.8, 0.4, 48);
+
+// --- Buffers ---
+function makeBuffer(data,type=gl.ARRAY_BUFFER){
+  const b=gl.createBuffer(); gl.bindBuffer(type,b);
+  gl.bufferData(type,data,gl.STATIC_DRAW); return b;
+}
+const posBuf=makeBuffer(cyl.positions);
+const texBuf=makeBuffer(cyl.texcoords);
+const idxBufSides=makeBuffer(cyl.indicesSides,gl.ELEMENT_ARRAY_BUFFER);
+const idxBufCaps=makeBuffer(cyl.indicesCaps,gl.ELEMENT_ARRAY_BUFFER);
+
+// --- Matrices ---
+function mat4Identity(){return new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);}
+function mat4Multiply(a,b){
+  const o=new Float32Array(16);
+  for(let i=0;i<4;i++)
+    for(let j=0;j<4;j++)
+      o[i+j*4]=a[i]*b[j*4]+a[i+4]*b[j*4+1]+a[i+8]*b[j*4+2]+a[i+12]*b[j*4+3];
+  return o;
+}
+function mat4Translate(tx,ty,tz){const m=mat4Identity();m[12]=tx;m[13]=ty;m[14]=tz;return m;}
+function mat4RotateY(a){const c=Math.cos(a),s=Math.sin(a);
+  return new Float32Array([c,0,s,0, 0,1,0,0, -s,0,c,0, 0,0,0,1]);}
+function mat4RotateX(a){const c=Math.cos(a),s=Math.sin(a);
+  return new Float32Array([1,0,0,0, 0,c,-s,0, 0,s,c,0, 0,0,0,1]);}
+function mat4Perspective(fovy,asp,n,f){const g=1/Math.tan(fovy/2);const o=new Float32Array(16);
+  o[0]=g/asp;o[5]=g;o[10]=(f+n)/(n-f);o[11]=-1;o[14]=2*f*n/(n-f);return o;}
+function mat4LookAt(e,c,u){
+  const fx=c[0]-e[0],fy=c[1]-e[1],fz=c[2]-e[2];
+  const rl=1/Math.hypot(fx,fy,fz);const f=[fx*rl,fy*rl,fz*rl];
+  const ul=1/Math.hypot(u[0],u[1],u[2]);const uu=[u[0]*ul,u[1]*ul,u[2]*ul];
+  const sx=f[1]*uu[2]-f[2]*uu[1], sy=f[2]*uu[0]-f[0]*uu[2], sz=f[0]*uu[1]-f[1]*uu[0];
+  const rl2=1/Math.hypot(sx,sy,sz);const s=[sx*rl2,sy*rl2,sz*rl2];
+  const up=[f[1]*s[2]-f[2]*s[1], f[2]*s[0]-f[0]*s[2], f[0]*s[1]-f[1]*s[0]];
+  const o=new Float32Array(16);
+  o[0]=s[0];o[4]=s[1];o[8]=s[2];o[12]=-(s[0]*e[0]+s[1]*e[1]+s[2]*e[2]);
+  o[1]=up[0];o[5]=up[1];o[9]=up[2];o[13]=-(up[0]*e[0]+up[1]*e[1]+up[2]*e[2]);
+  o[2]=-f[0];o[6]=-f[1];o[10]=-f[2];o[14]=f[0]*e[0]+f[1]*e[1]+f[2]*e[2];
+  o[3]=0;o[7]=0;o[11]=0;o[15]=1;return o;
+}
+
+// --- Cargar texturas ---
+let textureCaucho, textureRin, loaded=0;
+function loadTexture(url,onload){
+  const tex=gl.createTexture();
+  const img=new Image();
+  img.onload=()=>{
+    gl.bindTexture(gl.TEXTURE_2D,tex);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    onload(tex);
+  };
+  img.src=url;
+}
+loadTexture("img1.png",t=>{textureCaucho=t; loaded++; if(loaded==2) requestAnimationFrame(draw);});
+loadTexture("img2.png",t=>{textureRin=t; loaded++; if(loaded==2) requestAnimationFrame(draw);});
+
+// --- Cámara y animación ---
+const orbitRadius=6.0;
+const cylinderRadius=cyl.radius;
+let angleOrbit=0.0;
+const orbitSpeed=0.0018;
+let theta=0;
+let phi=1.2;
+let radius=15;
+
+gl.enable(gl.DEPTH_TEST);
+
+// --- Draw ---
+function draw(){
+  gl.clearColor(0.0, 0.0, 0.0, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  const proj=mat4Perspective(Math.PI/4, canvas.width/canvas.height,0.1,100);
+  const eyeX=radius*Math.sin(phi)*Math.cos(theta);
+  const eyeY=radius*Math.cos(phi);
+  const eyeZ=radius*Math.sin(phi)*Math.sin(theta);
+  const view=mat4LookAt([eyeX,eyeY,eyeZ],[0,0,0],[0,1,0]);
+
+  const cx=orbitRadius*Math.cos(angleOrbit);
+  const cz=orbitRadius*Math.sin(angleOrbit);
+  const Ralign=mat4RotateY(angleOrbit+Math.PI);
+  const spin=-(orbitRadius*angleOrbit)/cylinderRadius;
+  const Rspin=mat4RotateX(spin);
+  const T=mat4Translate(cx,0,cz);
+  const model=mat4Multiply(mat4Multiply(T,Ralign),Rspin);
+  const modelView=mat4Multiply(view,model);
+
+  gl.uniformMatrix4fv(uniP,false,proj);
+  gl.uniformMatrix4fv(uniMV,false,modelView);
+
+  // Posiciones
+  gl.bindBuffer(gl.ARRAY_BUFFER,posBuf);
+  gl.vertexAttribPointer(attribPos,3,gl.FLOAT,false,0,0);
+  gl.enableVertexAttribArray(attribPos);
+
+  // Coordenadas de textura
+  gl.bindBuffer(gl.ARRAY_BUFFER,texBuf);
+  gl.vertexAttribPointer(attribTex,2,gl.FLOAT,false,0,0);
+  gl.enableVertexAttribArray(attribTex);
+
+  // --- Laterales (gris) ---
+  gl.uniform1i(uniIsSide,true);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,idxBufSides);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, textureCaucho); // no importa, no se usa
+  gl.uniform1i(uniCaucho,0);
+  gl.drawElements(gl.TRIANGLES,cyl.indicesSides.length,gl.UNSIGNED_SHORT,0);
+
+  // --- Tapas (rin + caucho) ---
+  gl.uniform1i(uniIsSide,false);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, textureCaucho);
+  gl.uniform1i(uniCaucho,0);
+
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, textureRin);
+  gl.uniform1i(uniRin,1);
+
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,idxBufCaps);
+  gl.drawElements(gl.TRIANGLES,cyl.indicesCaps.length,gl.UNSIGNED_SHORT,0);
+
+  angleOrbit+=orbitSpeed;
+  requestAnimationFrame(draw);
+}
+</script>
+</body>
+</html>
