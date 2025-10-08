@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"/>
+<title>Visualizador de Ordenamientos (WebGL2)</title>
+<style>
+  body {
+  margin: 0;
+  background: #071227;
+  color: #e6eef6;
+  font-family: Inter, Arial, sans-serif;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+canvas {
+  width: 100vw;
+  height: 420px;
+  background: linear-gradient(180deg, #031022, #071827);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.6);
+  display: block;
+}
+
+.panel {
+  width: 100%;
+  max-width: 950px;
+  background: #0f1b26;
+  padding: 16px;
+  border-radius: 0 0 10px 10px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+.panel select,
+.panel button {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: none;
+  background: #144257;
+  color: #e6eef6;
+  cursor: pointer;
+}
+.panel button.secondary { background: #18323a; }
+.status {
+  flex-basis: 100%;
+  text-align: center;
+  color: #9fb7c7;
+  font-size: 13px;
+}
+  
+  h3{
+    margin:0 0 10px 0
+    }
+</style>
+</head>
+<body>
+  
+<canvas id="gl"></canvas>
+
+<div class="panel">
+  <label>Forma:</label>
+  <select id="shape">
+    <option value="rect">Rectángulo</option>
+    <option value="star">Estrella</option>
+  </select>
+
+  <label>Instancias:</label>
+  <select id="count">
+    <option>5</option><option>6</option><option>7</option><option>8</option>
+  </select>
+
+  <button id="shuffle">Aleatorizar</button>
+  <button id="reset" class="secondary">Reset</button>
+
+  <button id="bubble">Bubble Sort</button>
+  <button id="insert">Insertion Sort</button>
+  <button id="merge">Merge Sort</button>
+  <button id="quick">Quick Sort</button>
+
+  <label>Velocidad:</label>
+  <select id="speed">
+    <option value="900">Lento</option>
+    <option value="450" selected>Normal</option>
+    <option value="160">Rápido</option>
+  </select>
+
+  <div class="status" id="status">Estado: listo</div>
+</div>
+
+<script>
+// --- Función auxiliar HSV->RGB ---
+function hsvToRgb(h, s, v) {
+  let f = (n, k = (n + h * 6) % 6) =>
+    v - v * s * Math.max(Math.min(k, 4 - k, 1), 0);
+  return [f(5), f(3), f(1)];
+}
+
+// ---------- WebGL2 setup ----------
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2');
+if(!gl){ alert('Necesitas un navegador con WebGL'); throw 'no webgl'; }
+
+// vertex shader (instanced quads, positions in clipspace -1..1)
+const vsSrc = `#version 300 es
+in vec2 a_pos;       // unit quad coords [-1..1]
+in vec2 a_offset;    // instance center (clipspace coords)
+in float a_size;     // instance size (clipspace units)
+in float a_val;      // value (unused in transform)
+in vec3 a_color;
+out vec3 v_color;
+out vec2 v_local;
+void main(){
+  v_color = a_color;
+  vec2 scaled = vec2(a_pos.x * a_size * 0.4, a_pos.y * a_size);
+  vec2 pos = a_offset + scaled;
+  gl_Position = vec4(pos, 0.0, 1.0);
+  v_local = a_pos;
+}`;
+const fsSrc = `#version 300 es
+precision highp float;
+uniform int u_shape;
+in vec2 v_local;
+in vec3 v_color;
+out vec4 o_color;
+
+float sdStar(vec2 p){
+  vec2 q = p * 0.6;
+  float a = atan(q.y,q.x);
+  float r = length(q);
+  float k = cos(5.0*a)*0.45 + 0.5;
+  return r - k*0.5;
+}
+
+void main(){
+  if(u_shape==0){
+    if(abs(v_local.x)>1.0 || abs(v_local.y)>1.0) discard;
+    o_color = vec4(v_color, 1.0);
+  } else {
+    float d = sdStar(v_local);
+    if(d>0.0) discard;
+    o_color = vec4(v_color, 1.0);
+  }
+}
+`;
+
+// compile/link helpers
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s));
+    throw 'shader error';
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsSrc));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsSrc));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.error(gl.getProgramInfoLog(prog)); throw 'link error'; }
+gl.useProgram(prog);
+
+// attributes/uniforms
+const a_pos = gl.getAttribLocation(prog, 'a_pos');
+const a_offset = gl.getAttribLocation(prog, 'a_offset');
+const a_size = gl.getAttribLocation(prog, 'a_size');
+const u_shape = gl.getUniformLocation(prog, 'u_shape');
+
+// VAO + base quad
+const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+const quad = new Float32Array([
+  -1,-1, 1,-1, -1,1,
+  -1,1, 1,-1, 1,1
+]);
+const vbo = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(a_pos); gl.vertexAttribPointer(a_pos,2,gl.FLOAT,false,0,0);
+
+// instance buffers (dynamic)
+let instanceCount = 5;
+let instances = []; // logical array [{size, x, y}]
+let offsetsBuf = gl.createBuffer();
+let sizesBuf = gl.createBuffer();
+
+gl.bindBuffer(gl.ARRAY_BUFFER, offsetsBuf);
+gl.enableVertexAttribArray(a_offset);
+gl.vertexAttribPointer(a_offset,2,gl.FLOAT,false,0,0);
+gl.vertexAttribDivisor(a_offset,1);
+
+gl.bindBuffer(gl.ARRAY_BUFFER, sizesBuf);
+gl.enableVertexAttribArray(a_size);
+gl.vertexAttribPointer(a_size,1,gl.FLOAT,false,0,0);
+gl.vertexAttribDivisor(a_size,1);
+
+// color
+const a_color = gl.getAttribLocation(prog, 'a_color');
+const colorBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, colorBuf);
+gl.enableVertexAttribArray(a_color);
+gl.vertexAttribPointer(a_color, 3, gl.FLOAT, false, 0, 0);
+gl.vertexAttribDivisor(a_color, 1);
+
+
+// ---------- logical model & layout ----------
+const margin = 0.06; // clipspace margin (left/right)
+function makeInstances(n) {
+  instanceCount = n;
+  instances = [];
+  for (let i = 0; i < n; i++) {
+    const base = 0.06 + i * 0.02;
+    // color aleatorio suave
+    const hue = Math.random();
+    const color = hsvToRgb(hue, 0.6, 0.9);
+    instances.push({ size: base, value: i + 1, color });
+  }
+  shuffle(instances);
+  layoutPositions();
+}
+function shuffle(arr){ for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [arr[i],arr[j]]=[arr[j],arr[i]]; } }
+function layoutPositions(){
+  // assign x positions evenly across [-1+margin, 1-margin] according to current index order
+  const left = -1 + margin, right = 1 - margin;
+  const span = right - left;
+  for(let i=0;i<instances.length;i++){
+    const slot = (i + 0.5)/instances.length;
+    instances[i].x = left + slot * span;
+    instances[i].y = 0.0;
+  }
+}
+function uploadBuffers(){
+  const n = instances.length;
+  const offs = new Float32Array(n*2);
+  const sizes = new Float32Array(n);
+  const vals = new Float32Array(n);
+  
+  for(let i=0;i<n;i++){
+    offs[i*2] = instances[i].x;
+    offs[i*2+1] = instances[i].y;
+    sizes[i] = instances[i].size;
+    vals[i] = instances[i].size; // ordering by size
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, offsetsBuf); gl.bufferData(gl.ARRAY_BUFFER, offs, gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, sizesBuf); gl.bufferData(gl.ARRAY_BUFFER, sizes, gl.DYNAMIC_DRAW);
+  const colors = new Float32Array(n * 3);
+for (let i = 0; i < n; i++) {
+  const c = instances[i].color;
+  colors[i * 3] = c[0];
+  colors[i * 3 + 1] = c[1];
+  colors[i * 3 + 2] = c[2];
+}
+gl.bindBuffer(gl.ARRAY_BUFFER, colorBuf);
+gl.bufferData(gl.ARRAY_BUFFER, colors, gl.DYNAMIC_DRAW);
+}
+
+// ---------- drawing ----------
+function draw(){
+  gl.viewport(0,0,gl.canvas.width, gl.canvas.height);
+  gl.clearColor(0.03,0.08,0.15,1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(prog); gl.bindVertexArray(vao);
+  const shape = document.getElementById('shape').value;
+  gl.uniform1i(u_shape, shape==='rect'?0:1);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, instances.length);
+}
+
+// ---------- animation helpers ----------
+function animateTo(targetPositions, duration){
+  // targetPositions: array of {x,y} length = instances.length, corresponding to new slots order
+  return new Promise(resolve=>{
+    const start = instances.map(it=>({x:it.x,y:it.y}));
+    const t0 = performance.now();
+    function frame(now){
+      const p = Math.min(1, (now - t0)/duration);
+      // ease (smoothstep)
+      const e = p<0.5 ? 2*p*p : -1 + (4 - 2*p)*p;
+      for(let i=0;i<instances.length;i++){
+        instances[i].x = start[i].x + (targetPositions[i].x - start[i].x) * e;
+        instances[i].y = start[i].y + (targetPositions[i].y - start[i].y) * e;
+      }
+      uploadBuffers(); draw();
+      if(p<1) requestAnimationFrame(frame); else resolve();
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+// compute canonical target positions for current logical ordering (index -> slot)
+function computeTargetsForOrder(orderArr){
+  // orderArr length == instances.length; each element is an object (we keep same array ordering)
+  const left = -1 + margin, right = 1 - margin; const span = right-left;
+  const targets = [];
+  for(let i=0;i<orderArr.length;i++){
+    const slot = (i + 0.5)/orderArr.length;
+    targets.push({x: left + slot*span, y:0.0});
+  }
+  return targets;
+}
+
+// play sequence of step functions (each step must have modified the logical array 'instances' ordering)
+async function playSteps(steps, speed){
+  const status = document.getElementById('status');
+  for(let i=0;i<steps.length;i++){
+    status.textContent = `Estado: paso ${i+1}/${steps.length}`;
+    // execute logical step (swap or place)
+    steps[i]();
+    // compute targets based on current ordering and animate
+    const targets = computeTargetsForOrder(instances);
+    await animateTo(targets, speed);
+    // slight pause
+    await new Promise(r=>setTimeout(r, 60));
+  }
+  document.getElementById('status').textContent = 'Estado: terminado';
+}
+
+function genBubbleSteps(){
+  const steps = [];
+  // simulamos sobre tamaños para saber cuándo intercambiar
+  const a = instances.map(it => ({ size: it.size }));
+  const n = a.length;
+  for(let i=0;i<n;i++){
+    for(let j=0;j<n-1-i;j++){
+      if(a[j].size > a[j+1].size){
+        // swap in simulated array
+        [a[j], a[j+1]] = [a[j+1], a[j]];
+        // push a step that swaps the actual instance objects at positions j and j+1
+        ((j)=>{
+          steps.push(()=>{
+            [instances[j], instances[j+1]] = [instances[j+1], instances[j]];
+          });
+        })(j);
+      } else {
+        // optional no-op to slow down visualization of comparisons
+        steps.push(()=>{});
+      }
+    }
+  }
+  return steps;
+}
+
+function genInsertionSteps(){
+  const steps = [];
+  const a = instances.map(it => ({ size: it.size }));
+  const n = a.length;
+  for(let i=1;i<n;i++){
+    let key = a[i];
+    let j = i-1;
+    // we will simulate shifting in 'a' and push swaps for the real instances
+    while(j >= 0 && a[j].size > key.size){
+      // move element right in simulated array
+      a[j+1] = a[j];
+      // push step that swaps instances[j] and instances[j+1]
+      ((j)=>{
+        steps.push(()=>{
+          [instances[j], instances[j+1]] = [instances[j+1], instances[j]];
+        });
+      })(j);
+      j--;
+    }
+    a[j+1] = key;
+    // optional small marker step (no-op) to show placement
+    steps.push(()=>{});
+  }
+  return steps;
+}
+
+function genMergeSteps(){
+  // For small N, easiest is: compute final sorted order and then
+  // move each element into place using adjacent swaps (stable).
+  const steps = [];
+  const curSizes = instances.map(it => it.size);
+  const sorted = curSizes.slice().sort((a,b) => a - b);
+  // We'll mutate a 'curr' array representing sizes and push swaps that operate on instances
+  const curr = curSizes.slice();
+  for(let target=0; target<sorted.length; target++){
+    const need = sorted[target];
+    // find where 'need' currently is in curr
+    let pos = curr.indexOf(need);
+    // move it leftwards until it reaches 'target' by swapping adjacent pairs
+    while(pos > target){
+      // swap in curr
+      [curr[pos-1], curr[pos]] = [curr[pos], curr[pos-1]];
+      // push a step to swap the actual instances at positions pos-1,pos
+      ((p)=>{
+        steps.push(()=>{
+          [instances[p-1], instances[p]] = [instances[p], instances[p-1]];
+        });
+      })(pos);
+      pos--;
+    }
+  }
+  return steps;
+}
+
+function genQuickSteps(){
+  const steps = [];
+  // We'll implement quicksort on a copy and push steps whenever we swap in that array.
+  const a = instances.map(it => ({ size: it.size }));
+  function quick(lo, hi){
+    if(lo >= hi) return;
+    const pivot = a[Math.floor((lo+hi)/2)].size;
+    let i = lo, j = hi;
+    while(i <= j){
+      while(a[i].size < pivot) i++;
+      while(a[j].size > pivot) j--;
+      if(i <= j){
+        // record swap in simulated array
+        [a[i], a[j]] = [a[j], a[i]];
+        // push a step to swap the actual instances at i and j
+        ((i,j)=>{
+          steps.push(()=>{
+            [instances[i], instances[j]] = [instances[j], instances[i]];
+          });
+        })(i,j);
+        i++; j--;
+      }
+    }
+    if(lo < j) quick(lo, j);
+    if(i < hi) quick(i, hi);
+  }
+  quick(0, a.length-1);
+  return steps;
+}
+
+// ---------- UI wiring ----------
+const elShape = document.getElementById('shape');
+const elCount = document.getElementById('count');
+const elShuffle = document.getElementById('shuffle');
+const elReset = document.getElementById('reset');
+const elBubble = document.getElementById('bubble');
+const elInsert = document.getElementById('insert');
+const elMerge = document.getElementById('merge');
+const elQuick = document.getElementById('quick');
+const elSpeed = document.getElementById('speed');
+const elStatus = document.getElementById('status');
+
+function setCanvasSize() {
+  const ratio = window.devicePixelRatio || 1;
+  const width = window.innerWidth;
+  canvas.width = Math.floor(width * ratio);
+  canvas.height = Math.floor(420 * ratio);
+  canvas.style.width = width + 'px';
+  canvas.style.height = '420px';
+  layoutPositions();
+  uploadBuffers();
+  draw();
+}
+window.addEventListener('resize', setCanvasSize);
+setCanvasSize();
+
+// initialize
+makeInstances(parseInt(elCount.value));
+uploadBuffers();
+draw();
+
+// controls
+elCount.addEventListener('change', ()=>{
+  makeInstances(parseInt(elCount.value));
+  uploadBuffers();
+  draw();
+  elStatus.textContent = `Estado: ${elCount.value} instancias generadas`;
+});
+elShuffle.addEventListener('click', ()=>{
+  makeInstances(parseInt(elCount.value));
+  shuffle(instances);
+  layoutPositions();
+  uploadBuffers(); draw();
+  elStatus.textContent = 'Estado: aleatorizado';
+});
+elReset.addEventListener('click', ()=>{
+  makeInstances(parseInt(elCount.value));
+  uploadBuffers(); draw();
+  elStatus.textContent = 'Estado: reset';
+});
+elShape.addEventListener('change', ()=>{ draw(); });
+
+// helper to run chosen generator
+async function runGenerator(generator){
+  const speed = parseInt(elSpeed.value);
+  // take snapshot copy of instances (we only care about sizes / values)
+  const snapshot = instances.map(it=>({ size: it.size, value: it.value }));
+  const steps = generator(snapshot);
+  if(steps.length===0){ elStatus.textContent = 'Estado: sin pasos (ya ordenado?)'; return; }
+  elStatus.textContent = 'Estado: ejecutando';
+  // play steps; each step updates global instances ordering inside generator callbacks
+  await playSteps(steps, speed);
+}
+
+// buttons
+elBubble.addEventListener('click', ()=> runGenerator(genBubbleSteps));
+elInsert.addEventListener('click', ()=> runGenerator(genInsertionSteps));
+elMerge.addEventListener('click', ()=> runGenerator(genMergeSteps));
+elQuick.addEventListener('click', ()=> runGenerator(genQuickSteps));
+
+// keep drawing to reflect any intermediate updates
+function loop(){ uploadBuffers(); draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
